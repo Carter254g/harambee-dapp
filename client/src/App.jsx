@@ -14,6 +14,8 @@ function App() {
   const [loading, setLoading] = useState(false)
   const [txHash, setTxHash] = useState(null)
   const [error, setError] = useState(null)
+  const [transactions, setTransactions] = useState([])
+  const [loadingTx, setLoadingTx] = useState(false)
 
   const connectWallet = async () => {
     try {
@@ -29,6 +31,7 @@ function App() {
       setContract(contractInstance)
       await loadBalance(contractInstance, accounts[0])
       await loadTotalSupply(contractInstance)
+      await loadTransactions(contractInstance, accounts[0], provider)
     } catch (err) {
       setError('Failed to connect wallet. Please try again.')
     }
@@ -52,6 +55,39 @@ function App() {
     }
   }
 
+  const loadTransactions = async (contractInstance, address, provider) => {
+    setLoadingTx(true)
+    try {
+      const sentFilter = contractInstance.filters.Transfer(address, null)
+      const receivedFilter = contractInstance.filters.Transfer(null, address)
+
+      const sentEvents = await contractInstance.queryFilter(sentFilter, 0, 'latest')
+      const receivedEvents = await contractInstance.queryFilter(receivedFilter, 0, 'latest')
+
+      const allEvents = [...sentEvents, ...receivedEvents]
+
+      const txList = await Promise.all(allEvents.map(async (event) => {
+        const block = await provider.getBlock(event.blockNumber)
+        return {
+          hash: event.transactionHash,
+          from: event.args[0],
+          to: event.args[1],
+          amount: ethers.formatUnits(event.args[2], 18),
+          type: event.args[0].toLowerCase() === address.toLowerCase() ? 'sent' : 'received',
+          timestamp: block ? new Date(block.timestamp * 1000).toLocaleString() : 'Unknown',
+          blockNumber: event.blockNumber,
+        }
+      }))
+
+      txList.sort((a, b) => b.blockNumber - a.blockNumber)
+      setTransactions(txList)
+    } catch (err) {
+      console.error('Transaction history error:', err)
+    } finally {
+      setLoadingTx(false)
+    }
+  }
+
   const sendTokens = async (e) => {
     e.preventDefault()
     setError(null)
@@ -62,10 +98,12 @@ function App() {
     }
     setLoading(true)
     try {
+      const provider = new ethers.BrowserProvider(window.ethereum)
       const tx = await contract.transfer(recipient, ethers.parseUnits(amount, 18))
       await tx.wait()
       setTxHash(tx.hash)
       await loadBalance(contract, account)
+      await loadTransactions(contract, account, provider)
       setRecipient('')
       setAmount('')
     } catch (err) {
@@ -177,6 +215,55 @@ function App() {
                   {loading ? 'Sending...' : 'Send HBC'}
                 </button>
               </form>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm">
+              <div className="px-6 py-5 border-b border-gray-100 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-gray-900">Transaction History</h2>
+                <button
+                  onClick={async () => {
+                    const provider = new ethers.BrowserProvider(window.ethereum)
+                    await loadTransactions(contract, account, provider)
+                  }}
+                  className="text-sm text-yellow-500 hover:text-yellow-600 font-medium"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              {loadingTx ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="w-5 h-5 border-2 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+              ) : transactions.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <p className="text-gray-500 text-sm">No transactions yet</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-gray-50">
+                  {transactions.map((tx, i) => (
+                    <div key={i} className="flex items-center justify-between px-6 py-4 hover:bg-gray-50 transition-colors">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-sm font-bold ${tx.type === 'sent' ? 'bg-red-50 text-red-500' : 'bg-green-50 text-green-500'}`}>
+                          {tx.type === 'sent' ? '-' : '+'}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-gray-900 capitalize">{tx.type}</p>
+                          <p className="text-xs text-gray-400 font-mono">
+                            {tx.type === 'sent' ? `To: ${formatAddress(tx.to)}` : `From: ${formatAddress(tx.from)}`}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-sm font-semibold ${tx.type === 'sent' ? 'text-red-500' : 'text-green-500'}`}>
+                          {tx.type === 'sent' ? '-' : '+'}{parseFloat(tx.amount).toLocaleString()} HBC
+                        </p>
+                        <p className="text-xs text-gray-400">{tx.timestamp}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
